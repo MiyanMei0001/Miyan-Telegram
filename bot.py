@@ -13,14 +13,26 @@ bot = telebot.TeleBot(BOT_TOKEN)
 MONGODB_URI = os.getenv("MONGODB_URI")
 MONGODB_DBNAME = os.getenv("MONGODB_DBNAME")
 client = MongoClient(MONGODB_URI)
+client.admin.command("ping")
 db = client[MONGODB_DBNAME]
 files_collection = db['files']
+useWebhook = False
 
 app = Flask(__name__)
 
 def get_file_info(file_id):
     file_info = bot.get_file(file_id)
     return file_info
+
+def file_info_to_dict(file_info):
+    if file_info:
+        return {
+            "file_id": file_info.file_id,
+            "file_unique_id": file_info.file_unique_id,
+            "file_size": file_info.file_size,
+            "file_path": file_info.file_path,
+        }
+    return None
 
 def get_file_url(file_id):
     file_info = get_file_info(file_id)
@@ -82,13 +94,14 @@ def save_media(message):
         if existing_file:
             bot.reply_to(message, "Maaf, nama file sudah ada. Silakan gunakan nama lain.")
         else:
+            file_info = get_file_info(file_id)
             file_data = {
                 "name": name,
                 "file_id": file_id,
                 "media_type": media_type,
                 "user_id": message.from_user.id,
                 "username": message.from_user.username,
-                "file_info": get_file_info(file_id).to_dict()
+                "file_info": file_info_to_dict(file_info)
             }
             files_collection.insert_one(file_data)
             bot.reply_to(message, f"Media dengan nama '{name}' berhasil disimpan.")
@@ -129,9 +142,9 @@ def send_media(message):
     except Exception as e:
            bot.reply_to(message, f"Terjadi kesalahan: {str(e)}")
 
-@app.route("/", methods=['POST'])
+@app.route("/")
 def webhook():
-   if request.headers.get('content-type') == 'application/json':
+   if useWebhook && request.headers.get('content-type') == 'application/json':
        json_string = request.get_data().decode('utf-8')
        update = telebot.types.Update.de_json(json_string)
        bot.process_new_updates([update])
@@ -141,4 +154,6 @@ def webhook():
 
 
 if __name__ == "__main__":
-   app.run(host="0.0.0.0")
+    bot.remove_webhook()
+    bot.polling(none_stop=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 1000)))
