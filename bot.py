@@ -114,12 +114,12 @@ def save_media(message):
         
         file_data = {
                 "name": name,
-                "file_id": file_id,
+                "file_id": file_id if not is_large_file else None,  # Set file_id to None for large files
                 "media_type": media_type,
                 "user_id": message.from_user.id,
                 "username": message.from_user.username,
                 "file_info": file_info_to_dict(file_info),
-                "save_type": "online" if not is_large_file else "local"
+                "save_type": "local" if is_large_file else "online" # set to local if is large file
             }
 
         if is_large_file:
@@ -129,6 +129,7 @@ def save_media(message):
              else:
                  bot.reply_to(message, f"Failed to download the file {name}")
                  return
+        
         elif not is_valid_file_id(file_id):
             bot.reply_to(message, "File Id is invalid")
             return
@@ -151,11 +152,11 @@ def send_media(message):
         file_data = files_collection.find_one({"name": name})
 
         if file_data:
-            file_id = file_data["file_id"]
+            file_id = file_data.get("file_id")
             media_type = file_data["media_type"]
-            save_type = file_data.get("save_type", "online")
+            save_type = file_data.get("save_type", "online") # always should be "local" or "online"
             
-            if save_type == "online":
+            if save_type == "online" and file_id:
                 if media_type == 'document':
                     bot.send_document(message.chat.id, file_id, caption=f"File: {name} ({file_data.get('username')})")
                 elif media_type == 'photo':
