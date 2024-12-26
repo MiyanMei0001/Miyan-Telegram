@@ -13,7 +13,6 @@ bot = telebot.TeleBot(BOT_TOKEN)
 MONGODB_URI = os.getenv("MONGODB_URI")
 MONGODB_DBNAME = os.getenv("MONGODB_DBNAME")
 client = MongoClient(MONGODB_URI)
-client.admin.command("ping")
 db = client[MONGODB_DBNAME]
 files_collection = db['files']
 
