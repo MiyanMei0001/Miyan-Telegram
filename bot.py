@@ -5,21 +5,17 @@ from pymongo import MongoClient
 from flask import Flask, request
 from bson.objectid import ObjectId
 
-# Load environment variables
 load_dotenv()
 
-# Telegram bot setup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# MongoDB setup
 MONGODB_URI = os.getenv("MONGODB_URI")
 MONGODB_DBNAME = os.getenv("MONGODB_DBNAME")
 client = MongoClient(MONGODB_URI)
 db = client[MONGODB_DBNAME]
 files_collection = db['files']
 
-# Flask app setup
 app = Flask(__name__)
 
 def get_file_info(file_id):
