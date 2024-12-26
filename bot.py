@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import telebot
 from pymongo import MongoClient
 from flask import Flask, request
+from bson.objectid import ObjectId
 
 load_dotenv()
 
@@ -20,6 +21,29 @@ app = Flask(__name__)
 def get_file_info(file_id):
     file_info = bot.get_file(file_id)
     return file_info
+
+def file_info_to_dict(file_info):
+    if file_info:
+        return {
+            "file_id": file_info.file_id,
+            "file_unique_id": file_info.file_unique_id,
+            "file_size": file_info.file_size,
+            "file_path": file_info.file_path,
+        }
+    return None
+
+def get_file_url(file_id):
+    file_info = get_file_info(file_id)
+    file_path = file_info.file_path
+    return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+
+def is_valid_file_id(file_id):
+    try:
+        file_info = bot.get_file(file_id)
+        if file_info:
+            return True
+    except telebot.apihelper.ApiException:
+        return False
 
 def get_media_type(message):
     if message.reply_to_message:
@@ -40,35 +64,34 @@ def get_media_type(message):
     else:
         return None, None
 
-def forward_message_and_get_message_id(chat_id, from_chat_id, message_id):
-    forwarded_message = bot.forward_message(chat_id, from_chat_id, message_id)
-    return forwarded_message.message_id
-
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "Hello! I am a bot for saving and sending media.\n\nUse:\n/save [name] - to save media with a name\n/send [name] - to send media based on the name")
+    bot.reply_to(message, "Halo! Saya bot untuk menyimpan dan mengirim media.\n\nGunakan:\n/save [nama] - untuk menyimpan media dengan nama\n/send [nama] - untuk mengirim media berdasarkan nama")
 
 @bot.message_handler(commands=['save'])
 def save_media(message):
     try:
         command_parts = message.text.split(' ', 1)
         if len(command_parts) < 2:
-            bot.reply_to(message, "Incorrect format, use: /save [name]")
+            bot.reply_to(message, "Format salah, gunakan: /save [nama]")
             return
 
         name = command_parts[1].strip()
         media_type, file_id = get_media_type(message)
 
         if not file_id:
-             bot.reply_to(message, "Sorry, this command can only save media files (documents, photos, videos, audio, etc.)")
+             bot.reply_to(message, "Maaf, perintah ini hanya bisa untuk menyimpan file media (dokumen, foto, video, audio, dll)")
              return
 
+        if not is_valid_file_id(file_id):
+             bot.reply_to(message, "File Id tidak valid")
+             return
+        
         existing_file = files_collection.find_one({"name": name})
 
         if existing_file:
-            bot.reply_to(message, "Sorry, the file name already exists. Please use another name.")
+            bot.reply_to(message, "Maaf, nama file sudah ada. Silakan gunakan nama lain.")
         else:
-            forward_message_id = forward_message_and_get_message_id(message.chat.id, message.chat.id, message.message_id)
             file_info = get_file_info(file_id)
             file_data = {
                 "name": name,
@@ -76,32 +99,46 @@ def save_media(message):
                 "media_type": media_type,
                 "user_id": message.from_user.id,
                 "username": message.from_user.username,
-                "message_id": forward_message_id,
-                "file_info": file_info
+                "file_info": file_info_to_dict(file_info)
             }
             files_collection.insert_one(file_data)
-            bot.reply_to(message, f"Media with the name '{name}' has been successfully saved.")
+            bot.reply_to(message, f"Media dengan nama '{name}' berhasil disimpan.")
     except Exception as e:
-        bot.reply_to(message, f"An error occurred: {str(e)}")
+        bot.reply_to(message, f"Terjadi kesalahan: {str(e)}")
 
 @bot.message_handler(commands=['send'])
 def send_media(message):
     try:
         command_parts = message.text.split(' ', 1)
         if len(command_parts) < 2:
-            bot.reply_to(message, "Incorrect format, use: /send [name]")
+            bot.reply_to(message, "Format salah, gunakan: /send [nama]")
             return
 
         name = command_parts[1].strip()
         file_data = files_collection.find_one({"name": name})
 
         if file_data:
-            message_id = file_data["message_id"]
-            bot.forward_message(message.chat.id, message.chat.id, message_id)
+            file_id = file_data["file_id"]
+            media_type = file_data["media_type"]
+            
+            if media_type == 'document':
+                bot.send_document(message.chat.id, file_id, caption=f"File: {name} ({file_data.get('username')})")
+            elif media_type == 'photo':
+                bot.send_photo(message.chat.id, file_id, caption=f"Foto: {name} ({file_data.get('username')})")
+            elif media_type == 'video':
+                bot.send_video(message.chat.id, file_id, caption=f"Video: {name} ({file_data.get('username')})")
+            elif media_type == 'audio':
+                bot.send_audio(message.chat.id, file_id, caption=f"Audio: {name} ({file_data.get('username')})")
+            elif media_type == 'voice':
+                bot.send_voice(message.chat.id, file_id, caption=f"Voice Note: {name} ({file_data.get('username')})")
+            elif media_type == 'sticker':
+                bot.send_sticker(message.chat.id, file_id)
+            else:
+                bot.reply_to(message, "Tipe media tidak dikenal.")
         else:
-            bot.reply_to(message, f"No media found with the name '{name}'")
+            bot.reply_to(message, f"Tidak ada media dengan nama '{name}'")
     except Exception as e:
-           bot.reply_to(message, f"An error occurred: {str(e)}")
+           bot.reply_to(message, f"Terjadi kesalahan: {str(e)}")
 
 @app.route("/")
 def home():
@@ -110,4 +147,4 @@ def home():
 
 if __name__ == "__main__":
     bot.polling(none_stop=True)
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
