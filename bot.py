@@ -36,6 +36,9 @@ def is_valid_file_id(file_id):
         return False
 
 def get_media_type(message):
+    if message.reply_to_message:
+        message = message.reply_to_message
+        
     if message.document:
         return 'document', message.document.file_id
     elif message.photo:
@@ -47,9 +50,9 @@ def get_media_type(message):
     elif message.voice:
         return 'voice', message.voice.file_id
     elif message.sticker:
-         return 'sticker', message.sticker.file_id
+        return 'sticker', message.sticker.file_id
     else:
-         return None, None
+        return None, None
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
