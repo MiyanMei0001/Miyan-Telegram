@@ -1,4 +1,4 @@
-Flask
-python-telegram-bot
+flask
+telebot
 pymongo
-python-dotenv
+requests
