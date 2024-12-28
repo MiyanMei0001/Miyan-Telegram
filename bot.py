@@ -3,7 +3,7 @@ import csv
 import json
 from io import StringIO
 from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -29,11 +29,25 @@ logger = logging.getLogger(__name__)
 
 # MongoDB connection
 client = MongoClient(os.getenv('MONGODB_URI'))
-db = client['your_database_name']
+db = client['Miyan']
+collection = db['user_data']  # Use a single collection with user_id field
 
-# Helper function to get user-specific collection
-def get_user_collection(user_id):
-    return db[f'user_{user_id}']
+# Helper function to get user-specific data
+def get_user_data(user_id):
+    return collection.find({'user_id': user_id})
+
+def insert_user_data(user_id, data):
+    data['user_id'] = user_id
+    collection.insert_one(data)
+
+def update_user_data(user_id, key, old_value, new_value):
+    collection.update_one(
+        {'user_id': user_id, key: old_value},
+        {'$set': {key: new_value}}
+    )
+
+def delete_user_data(user_id, key, value):
+    collection.delete_one({'user_id': user_id, key: value})
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -79,19 +93,26 @@ def button_handler(update: Update, context: CallbackContext) -> None:
     if query.data == 'add':
         query.edit_message_text('Use /add key:value to add data.')
     elif query.data == 'list':
-        list_data(update, context, query)
+        list_data(update, context)
     elif query.data == 'delete':
         query.edit_message_text('Use /delete key:value to delete data.')
     elif query.data == 'search':
         query.edit_message_text('Use /search keyword to search data.')
     elif query.data == 'stats':
-        stats_command(update, context, query)
+        stats_command(update, context)
 
-def list_data(update: Update, context: CallbackContext, query=None) -> None:
-    user_id = update.callback_query.from_user.id if query else update.message.from_user.id
-    collection = get_user_collection(user_id)
+def list_data(update: Update, context: CallbackContext) -> None:
+    if update.callback_query:
+        query = update.callback_query
+        user_id = query.from_user.id
+        page_str = query.data.split('_')[1] if '_' in query.data else '1'
+        page = int(page_str)
+    else:
+        query = None
+        user_id = update.message.from_user.id
+        page = 1
 
-    documents = list(collection.find())
+    documents = list(get_user_data(user_id))
     if not documents:
         if query:
             query.edit_message_text('No data available.')
@@ -100,7 +121,6 @@ def list_data(update: Update, context: CallbackContext, query=None) -> None:
         return
 
     # Pagination
-    page = int(context.args[0]) if context.args else 1
     per_page = 5
     start_idx = (page - 1) * per_page
     end_idx = start_idx + per_page
@@ -109,7 +129,7 @@ def list_data(update: Update, context: CallbackContext, query=None) -> None:
     message = 'Your data:\n'
     for doc in paginated_docs:
         for key, value in doc.items():
-            if key != '_id':
+            if key != '_id' and key != 'user_id':
                 message += f"- {key}: {value}\n"
 
     # Navigation buttons
@@ -127,9 +147,7 @@ def list_data(update: Update, context: CallbackContext, query=None) -> None:
 
 def backup_data(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
-    collection = get_user_collection(user_id)
-
-    documents = list(collection.find())
+    documents = list(get_user_data(user_id))
     if not documents:
         update.message.reply_text('No data available to backup.')
         return
@@ -139,9 +157,7 @@ def backup_data(update: Update, context: CallbackContext) -> None:
 
 def export_csv(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
-    collection = get_user_collection(user_id)
-
-    documents = list(collection.find())
+    documents = list(get_user_data(user_id))
     if not documents:
         update.message.reply_text('No data available to export.')
         return
@@ -155,18 +171,23 @@ def export_csv(update: Update, context: CallbackContext) -> None:
 
 def import_json(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
-    collection = get_user_collection(user_id)
-
     if not update.message.document:
         update.message.reply_text('Please upload a JSON file.')
         return
 
     file = context.bot.get_file(update.message.document.file_id)
     json_data = file.download_as_bytearray().decode('utf-8')
-    data = json.loads(json_data)
-
-    collection.insert_many(data)
-    update.message.reply_text('Data imported successfully.')
+    try:
+        data = json.loads(json_data)
+        if isinstance(data, list):
+            for doc in data:
+                doc['user_id'] = user_id
+            collection.insert_many(data)
+            update.message.reply_text('Data imported successfully.')
+        else:
+            update.message.reply_text('Invalid JSON format. Please provide a list of documents.')
+    except json.JSONDecodeError:
+        update.message.reply_text('Invalid JSON data.')
 
 def error_handler(update: Update, context: CallbackContext) -> None:
     logger.warning('Update "%s" caused error "%s"', update, context.error)
@@ -174,10 +195,11 @@ def error_handler(update: Update, context: CallbackContext) -> None:
 # Add handlers to dispatcher
 dispatcher.add_handler(CommandHandler('start', start))
 dispatcher.add_handler(CommandHandler('help', help_command))
+dispatcher.add_handler(CommandHandler('list', list_data))
 dispatcher.add_handler(CommandHandler('backup', backup_data))
 dispatcher.add_handler(CommandHandler('export_csv', export_csv))
 dispatcher.add_handler(CommandHandler('import_json', import_json))
-dispatcher.add_handler(CallbackQueryHandler(button_handler))
+dispatcher.add_handler(CallbackQueryHandler(button_handler, pattern='^(add|delete|search|stats)$'))
 dispatcher.add_handler(CallbackQueryHandler(list_data, pattern='^list_'))
 dispatcher.add_error_handler(error_handler)
 
@@ -186,11 +208,7 @@ dispatcher.add_error_handler(error_handler)
 def webhook():
     update = Update.de_json(request.get_json(force=True), updater.bot)
     dispatcher.process_update(update)
-    return '', 200
-
-@app.route('/')
-def home():
-    return 'ok', 200
+    return 'ok'
 
 # Start Flask server
 if __name__ == '__main__':
