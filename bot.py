@@ -1,150 +1,193 @@
-import os
-from dotenv import load_dotenv
-import telebot
-from pymongo import MongoClient
+import logging
+import csv
+import json
+from io import StringIO
 from flask import Flask, request
-from bson.objectid import ObjectId
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    MessageHandler,
+    Filters,
+    CallbackContext,
+    CallbackQueryHandler,
+    Dispatcher,
+)
+from pymongo import MongoClient
+from dotenv import load_dotenv
+import os
 
+# Load environment variables from .env file
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-bot = telebot.TeleBot(BOT_TOKEN)
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-MONGODB_URI = os.getenv("MONGODB_URI")
-MONGODB_DBNAME = os.getenv("MONGODB_DBNAME")
-client = MongoClient(MONGODB_URI)
-db = client[MONGODB_DBNAME]
-files_collection = db['files']
+# MongoDB connection
+client = MongoClient(os.getenv('MONGODB_URI'))
+db = client['your_database_name']
 
+# Helper function to get user-specific collection
+def get_user_collection(user_id):
+    return db[f'user_{user_id}']
+
+# Initialize Flask app
 app = Flask(__name__)
 
-def get_file_info(file_id):
-    file_info = bot.get_file(file_id)
-    return file_info
+# Initialize Telegram bot
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
+dispatcher = updater.dispatcher
 
-def file_info_to_dict(file_info):
-    if file_info:
-        return {
-            "file_id": file_info.file_id,
-            "file_unique_id": file_info.file_unique_id,
-            "file_size": file_info.file_size,
-            "file_path": file_info.file_path,
-        }
-    return None
+# Command handlers
 
-def get_file_url(file_id):
-    file_info = get_file_info(file_id)
-    file_path = file_info.file_path
-    return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+def start(update: Update, context: CallbackContext) -> None:
+    keyboard = [
+        [InlineKeyboardButton("Add Data", callback_data='add')],
+        [InlineKeyboardButton("List Data", callback_data='list')],
+        [InlineKeyboardButton("Delete Data", callback_data='delete')],
+        [InlineKeyboardButton("Search Data", callback_data='search')],
+        [InlineKeyboardButton("Stats", callback_data='stats')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text('Welcome to the MongoDB Manager Bot! Choose an action:', reply_markup=reply_markup)
 
-def is_valid_file_id(file_id):
-    try:
-        file_info = bot.get_file(file_id)
-        if file_info:
-            return True
-    except telebot.apihelper.ApiException:
-        return False
+def help_command(update: Update, context: CallbackContext) -> None:
+    help_text = """
+Available commands:
+/add <key:value> - Add data to the database.
+/update <key:old_value> <key:new_value> - Update existing data.
+/delete <key:value> - Delete data from the database.
+/list - List all data in the database.
+/search <keyword> - Search for data containing the keyword.
+/clear - Delete all data in your collection.
+/stats - Show statistics about your data.
+/backup - Download your data as a JSON file.
+/export_csv - Export your data as a CSV file.
+/import_json - Import data from a JSON file.
+"""
+    update.message.reply_text(help_text)
 
-def get_media_type(message):
-    if message.reply_to_message:
-        message = message.reply_to_message
-        
-    if message.document:
-        return 'document', message.document.file_id
-    elif message.photo:
-        return 'photo', message.photo[-1].file_id
-    elif message.video:
-        return 'video', message.video.file_id
-    elif message.audio:
-        return 'audio', message.audio.file_id
-    elif message.voice:
-        return 'voice', message.voice.file_id
-    elif message.sticker:
-        return 'sticker', message.sticker.file_id
+def button_handler(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    query.answer()
+
+    if query.data == 'add':
+        query.edit_message_text('Use /add key:value to add data.')
+    elif query.data == 'list':
+        list_data(update, context, query)
+    elif query.data == 'delete':
+        query.edit_message_text('Use /delete key:value to delete data.')
+    elif query.data == 'search':
+        query.edit_message_text('Use /search keyword to search data.')
+    elif query.data == 'stats':
+        stats_command(update, context, query)
+
+def list_data(update: Update, context: CallbackContext, query=None) -> None:
+    user_id = update.callback_query.from_user.id if query else update.message.from_user.id
+    collection = get_user_collection(user_id)
+
+    documents = list(collection.find())
+    if not documents:
+        if query:
+            query.edit_message_text('No data available.')
+        else:
+            update.message.reply_text('No data available.')
+        return
+
+    # Pagination
+    page = int(context.args[0]) if context.args else 1
+    per_page = 5
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    paginated_docs = documents[start_idx:end_idx]
+
+    message = 'Your data:\n'
+    for doc in paginated_docs:
+        for key, value in doc.items():
+            if key != '_id':
+                message += f"- {key}: {value}\n"
+
+    # Navigation buttons
+    keyboard = []
+    if page > 1:
+        keyboard.append(InlineKeyboardButton("Previous", callback_data=f'list_{page - 1}'))
+    if end_idx < len(documents):
+        keyboard.append(InlineKeyboardButton("Next", callback_data=f'list_{page + 1}'))
+    reply_markup = InlineKeyboardMarkup([keyboard]) if keyboard else None
+
+    if query:
+        query.edit_message_text(message, reply_markup=reply_markup)
     else:
-        return None, None
+        update.message.reply_text(message, reply_markup=reply_markup)
 
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    bot.reply_to(message, "Halo! Saya bot untuk menyimpan dan mengirim media.\n\nGunakan:\n/save [nama] - untuk menyimpan media dengan nama\n/send [nama] - untuk mengirim media berdasarkan nama")
+def backup_data(update: Update, context: CallbackContext) -> None:
+    user_id = update.message.from_user.id
+    collection = get_user_collection(user_id)
 
-@bot.message_handler(commands=['save'])
-def save_media(message):
-    try:
-        command_parts = message.text.split(' ', 1)
-        if len(command_parts) < 2:
-            bot.reply_to(message, "Format salah, gunakan: /save [nama]")
-            return
+    documents = list(collection.find())
+    if not documents:
+        update.message.reply_text('No data available to backup.')
+        return
 
-        name = command_parts[1].strip()
-        media_type, file_id = get_media_type(message)
+    json_data = json.dumps(documents, default=str, indent=2)
+    context.bot.send_document(chat_id=update.message.chat_id, document=StringIO(json_data), filename='backup.json')
 
-        if not file_id:
-             bot.reply_to(message, "Maaf, perintah ini hanya bisa untuk menyimpan file media (dokumen, foto, video, audio, dll)")
-             return
+def export_csv(update: Update, context: CallbackContext) -> None:
+    user_id = update.message.from_user.id
+    collection = get_user_collection(user_id)
 
-        if not is_valid_file_id(file_id):
-             bot.reply_to(message, "File Id tidak valid")
-             return
-        
-        existing_file = files_collection.find_one({"name": name})
+    documents = list(collection.find())
+    if not documents:
+        update.message.reply_text('No data available to export.')
+        return
 
-        if existing_file:
-            bot.reply_to(message, "Maaf, nama file sudah ada. Silakan gunakan nama lain.")
-        else:
-            file_info = get_file_info(file_id)
-            file_data = {
-                "name": name,
-                "file_id": file_id,
-                "media_type": media_type,
-                "user_id": message.from_user.id,
-                "username": message.from_user.username,
-                "file_info": file_info_to_dict(file_info)
-            }
-            files_collection.insert_one(file_data)
-            bot.reply_to(message, f"Media dengan nama '{name}' berhasil disimpan.")
-    except Exception as e:
-        bot.reply_to(message, f"Terjadi kesalahan: {str(e)}")
+    csv_file = StringIO()
+    writer = csv.DictWriter(csv_file, fieldnames=documents[0].keys())
+    writer.writeheader()
+    writer.writerows(documents)
 
-@bot.message_handler(commands=['send'])
-def send_media(message):
-    try:
-        command_parts = message.text.split(' ', 1)
-        if len(command_parts) < 2:
-            bot.reply_to(message, "Format salah, gunakan: /send [nama]")
-            return
+    context.bot.send_document(chat_id=update.message.chat_id, document=StringIO(csv_file.getvalue()), filename='data.csv')
 
-        name = command_parts[1].strip()
-        file_data = files_collection.find_one({"name": name})
+def import_json(update: Update, context: CallbackContext) -> None:
+    user_id = update.message.from_user.id
+    collection = get_user_collection(user_id)
 
-        if file_data:
-            file_id = file_data["file_id"]
-            media_type = file_data["media_type"]
-            
-            if media_type == 'document':
-                bot.send_document(message.chat.id, file_id, caption=f"File: {name} ({file_data.get('username')})")
-            elif media_type == 'photo':
-                bot.send_photo(message.chat.id, file_id, caption=f"Foto: {name} ({file_data.get('username')})")
-            elif media_type == 'video':
-                bot.send_video(message.chat.id, file_id, caption=f"Video: {name} ({file_data.get('username')})")
-            elif media_type == 'audio':
-                bot.send_audio(message.chat.id, file_id, caption=f"Audio: {name} ({file_data.get('username')})")
-            elif media_type == 'voice':
-                bot.send_voice(message.chat.id, file_id, caption=f"Voice Note: {name} ({file_data.get('username')})")
-            elif media_type == 'sticker':
-                bot.send_sticker(message.chat.id, file_id)
-            else:
-                bot.reply_to(message, "Tipe media tidak dikenal.")
-        else:
-            bot.reply_to(message, f"Tidak ada media dengan nama '{name}'")
-    except Exception as e:
-           bot.reply_to(message, f"Terjadi kesalahan: {str(e)}")
+    if not update.message.document:
+        update.message.reply_text('Please upload a JSON file.')
+        return
 
-@app.route("/")
-def home():
-       return 'ok', 200
+    file = context.bot.get_file(update.message.document.file_id)
+    json_data = file.download_as_bytearray().decode('utf-8')
+    data = json.loads(json_data)
 
+    collection.insert_many(data)
+    update.message.reply_text('Data imported successfully.')
 
-if __name__ == "__main__":
-    bot.polling(none_stop=True)
-    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+def error_handler(update: Update, context: CallbackContext) -> None:
+    logger.warning('Update "%s" caused error "%s"', update, context.error)
+
+# Add handlers to dispatcher
+dispatcher.add_handler(CommandHandler('start', start))
+dispatcher.add_handler(CommandHandler('help', help_command))
+dispatcher.add_handler(CommandHandler('backup', backup_data))
+dispatcher.add_handler(CommandHandler('export_csv', export_csv))
+dispatcher.add_handler(CommandHandler('import_json', import_json))
+dispatcher.add_handler(CallbackQueryHandler(button_handler))
+dispatcher.add_handler(CallbackQueryHandler(list_data, pattern='^list_'))
+dispatcher.add_error_handler(error_handler)
+
+# Flask route for webhook
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), updater.bot)
+    dispatcher.process_update(update)
+    return 'ok'
+
+# Start Flask server
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT')))
