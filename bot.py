@@ -186,7 +186,11 @@ dispatcher.add_error_handler(error_handler)
 def webhook():
     update = Update.de_json(request.get_json(force=True), updater.bot)
     dispatcher.process_update(update)
-    return 'ok'
+    return '', 200
+
+@app.route('/')
+def home():
+    return 'ok', 200
 
 # Start Flask server
 if __name__ == '__main__':
