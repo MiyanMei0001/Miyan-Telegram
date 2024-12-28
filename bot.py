@@ -11,7 +11,7 @@ db = client['Miyan']  # Replace with your actual database name
 fs = gridfs.GridFS(db)
 
 # Set up Telegram bot with the provided token
-bot = telebot.TeleBot('7898850924:AAFKftyshzOm3eUfKPLLlVU-989N51kfbHA')
+bot = telebot.TeleBot('7772133971:AAHgGq0Yci1c5Hwyb0kz0nZG0sJOYIsXs9M')
 
 # Flask app setup
 app = Flask(__name__)
